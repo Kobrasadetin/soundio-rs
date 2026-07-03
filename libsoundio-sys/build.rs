@@ -19,6 +19,7 @@ macro_rules! t {
 }
 
 fn main() {
+
 	// First check whether a pkg-config command is installed in the path.
 	let has_pkgconfig = Command::new("pkg-config").output().is_ok();
 
@@ -50,6 +51,14 @@ fn main() {
 	let mut cfg = cmake::Config::new("libsoundio");
 
 	if msvc {
+		let profile = env::var("PROFILE").unwrap_or_default();
+		if profile == "debug" {
+			cfg.define("CMAKE_BUILD_TYPE", "Debug");
+			cfg.define("CMAKE_C_FLAGS_DEBUG", "/MDd /std:c11 /D_ENABLE_ATOMIC_ALIGNMENT_FIX");
+		} else {
+			cfg.define("CMAKE_BUILD_TYPE", "Release");
+			cfg.define("CMAKE_C_FLAGS_RELEASE", "/MD /std:c11 /D_ENABLE_ATOMIC_ALIGNMENT_FIX");
+		}
 		// // libgit2 passes the /GL flag to enable whole program optimization, but
 		// // this requires that the /LTCG flag is passed to the linker later on,
 		// // and currently the compiler does not do that, so we disable whole
