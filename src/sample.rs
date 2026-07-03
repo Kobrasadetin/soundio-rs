@@ -90,7 +90,7 @@ impl u24 {
 impl i24 {
 	#[inline]
 	pub fn min_value() -> i32 {
-		-0x0080000
+		-0x00800000
 	}
 	#[inline]
 	pub fn max_value() -> i32 {
@@ -118,16 +118,16 @@ macro_rules! impl_to_methods {
 macro_rules! impl_raw_methods {
 	() => {
 		unsafe fn from_raw_le(ptr: *const u8) -> Self {
-			Self::from_le(*(ptr as *const _))
+			Self::from_le(std::ptr::read_unaligned(ptr as *const Self))
 		}
 		unsafe fn from_raw_be(ptr: *const u8) -> Self {
-			Self::from_be(*(ptr as *const _))
+			Self::from_be(std::ptr::read_unaligned(ptr as *const Self))
 		}
 		unsafe fn to_raw_le(v: Self, ptr: *mut u8) {
-			*(ptr as *mut _) = Self::to_le(v);
+			std::ptr::write_unaligned(ptr as *mut Self, Self::to_le(v));
 		}
 		unsafe fn to_raw_be(v: Self, ptr: *mut u8) {
-			*(ptr as *mut _) = Self::to_be(v);
+			std::ptr::write_unaligned(ptr as *mut Self, Self::to_be(v));
 		}
 	}
 }
@@ -135,22 +135,16 @@ macro_rules! impl_raw_methods {
 macro_rules! impl_raw_methods_24 {
 	($ty_24:ident, $ty_32:ident) => {
 		unsafe fn from_raw_le(ptr: *const u8) -> Self {
-			// TODO: This seems like a suboptimal implementation.
 			$ty_24(((u32::from_raw_le(ptr) << 8) as $ty_32) >> 8)
 		}
 		unsafe fn from_raw_be(ptr: *const u8) -> Self {
-			// TODO: This seems like a suboptimal implementation.
-			$ty_24(((u32::from_raw_le(ptr.offset(3)) << 8) as $ty_32) >> 8)
+			$ty_24(((u32::from_raw_be(ptr) << 8) as $ty_32) >> 8)
 		}
 		unsafe fn to_raw_le(v: Self, ptr: *mut u8) {
-			*ptr = (v.0 & 0xFF) as u8;
-			*ptr.offset(1) = ((v.0 >> 8) & 0xFF) as u8;
-			*ptr.offset(2) = ((v.0 >> 16) & 0xFF) as u8;
+			u32::to_raw_le((v.0 as u32) & 0x00FFFFFF, ptr);
 		}
 		unsafe fn to_raw_be(v: Self, ptr: *mut u8) {
-			*ptr = ((v.0 >> 16) & 0xFF) as u8;
-			*ptr.offset(1) = ((v.0 >> 8) & 0xFF) as u8;
-			*ptr.offset(2) = (v.0 & 0xFF) as u8;
+			u32::to_raw_be((v.0 as u32) & 0x00FFFFFF, ptr);
 		}
 	}
 }
@@ -332,16 +326,20 @@ impl Sample for i32 {
 macro_rules! impl_float_raw_methods {
 	($uint_ty:ident) => {
 		unsafe fn from_raw_le(ptr: *const u8) -> Self {
-			std::mem::transmute($uint_ty::from_le(*(ptr as *const _)))
+			let bits = std::ptr::read_unaligned(ptr as *const $uint_ty);
+			std::mem::transmute($uint_ty::from_le(bits))
 		}
 		unsafe fn from_raw_be(ptr: *const u8) -> Self {
-			std::mem::transmute($uint_ty::from_be(*(ptr as *const _)))
+			let bits = std::ptr::read_unaligned(ptr as *const $uint_ty);
+			std::mem::transmute($uint_ty::from_be(bits))
 		}
 		unsafe fn to_raw_le(v: Self, ptr: *mut u8) {
-			*(ptr as *mut _) = $uint_ty::to_le(std::mem::transmute(v));
+			let bits: $uint_ty = std::mem::transmute(v);
+			std::ptr::write_unaligned(ptr as *mut $uint_ty, $uint_ty::to_le(bits));
 		}
 		unsafe fn to_raw_be(v: Self, ptr: *mut u8) {
-			*(ptr as *mut _) = $uint_ty::to_le(std::mem::transmute(v));
+			let bits: $uint_ty = std::mem::transmute(v);
+			std::ptr::write_unaligned(ptr as *mut $uint_ty, $uint_ty::to_be(bits));
 		}
 	}
 }
@@ -485,6 +483,62 @@ mod tests {
 				i24::to_raw_le(i24(v), ptr);
 				assert_eq!(i24(v), i24::from_raw_le(ptr));
 			}
+		}
+	}
+
+	#[test]
+	fn raw_access_is_unaligned_safe_and_endian_correct() {
+		unsafe {
+			let mut buffer = [0xAAu8; 16];
+			let ptr = buffer.as_mut_ptr().offset(1);
+
+			u16::to_raw_le(0x1234, ptr);
+			assert_eq!(&buffer[1..3], &[0x34, 0x12]);
+			assert_eq!(u16::from_raw_le(ptr), 0x1234);
+
+			u16::to_raw_be(0x1234, ptr);
+			assert_eq!(&buffer[1..3], &[0x12, 0x34]);
+			assert_eq!(u16::from_raw_be(ptr), 0x1234);
+
+			f32::to_raw_le(1.0, ptr);
+			assert_eq!(&buffer[1..5], &[0x00, 0x00, 0x80, 0x3F]);
+			assert_eq!(f32::from_raw_le(ptr), 1.0);
+
+			f32::to_raw_be(1.0, ptr);
+			assert_eq!(&buffer[1..5], &[0x3F, 0x80, 0x00, 0x00]);
+			assert_eq!(f32::from_raw_be(ptr), 1.0);
+
+			f64::to_raw_le(1.0, ptr);
+			assert_eq!(f64::from_raw_le(ptr), 1.0);
+
+			f64::to_raw_be(1.0, ptr);
+			assert_eq!(f64::from_raw_be(ptr), 1.0);
+		}
+	}
+
+	#[test]
+	fn raw_24_bit_access_uses_low_three_bytes_of_word() {
+		unsafe {
+			let mut buffer = [0xAAu8; 8];
+			let ptr = buffer.as_mut_ptr().offset(1);
+
+			assert_eq!(i24::min_value(), -0x00800000);
+
+			i24::to_raw_le(i24(-0x00800000), ptr);
+			assert_eq!(&buffer[1..5], &[0x00, 0x00, 0x80, 0x00]);
+			assert_eq!(i24::from_raw_le(ptr), i24(-0x00800000));
+
+			i24::to_raw_be(i24(-0x00800000), ptr);
+			assert_eq!(&buffer[1..5], &[0x00, 0x80, 0x00, 0x00]);
+			assert_eq!(i24::from_raw_be(ptr), i24(-0x00800000));
+
+			u24::to_raw_le(u24(0x00123456), ptr);
+			assert_eq!(&buffer[1..5], &[0x56, 0x34, 0x12, 0x00]);
+			assert_eq!(u24::from_raw_le(ptr), u24(0x00123456));
+
+			u24::to_raw_be(u24(0x00123456), ptr);
+			assert_eq!(&buffer[1..5], &[0x00, 0x12, 0x34, 0x56]);
+			assert_eq!(u24::from_raw_be(ptr), u24(0x00123456));
 		}
 	}
 }

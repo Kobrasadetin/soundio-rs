@@ -231,7 +231,7 @@ impl<'a> OutStream<'a> {
 		}
 	}
 
-	/// The number of bytes in a sample, e.g. 3 for `i24`.
+	/// The number of bytes in a sample, e.g. 4 for `i24`.
 	pub fn bytes_per_sample(&self) -> i32 {
 		unsafe {
 			(*self.userdata.outstream).bytes_per_sample as _
